@@ -1,0 +1,22 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Sep 16 17:13:36 2023
+
+@author: Aguirre Mizair
+"""
+
+import importlib
+#import our own files and reload
+import capm
+importlib.reload(capm)
+
+
+#inputs
+benchmark='XLK' #X    ^
+security='TSLA' #Y
+
+capm1=capm.model(benchmark,security,decimals=7)
+capm1.syncronise_timeseries()
+capm1.plot_timeseries()
+capm1.compute_linear_regression()
+capm1.plot_linear_regression()
