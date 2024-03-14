@@ -1,0 +1,44 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Sep 22 18:18:13 2023
+
+@author: Aguirre Mizair
+"""
+
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import scipy.stats as sts
+import scipy.optimize as op
+import yfinance as yf 
+import datetime as dt
+import importlib
+
+import capm
+importlib.reload(capm)
+
+#inputs
+position_security='V'
+position_delta_usd=10 #in Millions USD
+benchmark='^SPX'
+# hedge_universe=['AAPl','MSFT','NVDA','AMZN','GOOG','META','NFLX','SPY','XLK','XLF']
+hedge_universe=['BRK-B','JPM','V','MA','BAC','MS','GS','BLK','SPY','XLF']
+regularization=0.01
+
+#compute correlation
+df=capm.dataframe_correl_beta(benchmark, position_security, hedge_universe)
+
+
+#computacions
+hedge_rics=['SPY','MA'] #activos con buena correlacion a security
+hedger=capm.hedger(position_security,position_delta_usd,benchmark,hedge_rics)
+hedger.compute_betas()
+hedger.compute_hedge_weights(regularization=regularization)
+
+#variables
+hedge_weights=hedger.hedge_weights
+hedge_beta_usd=hedger.hedge_beta_usd
+hedge_delta_usd=hedger.hedge_delta_usd
+beta_neutrality=position_delta_usd*hedger.position_beta+hedge_beta_usd
+delta_neutrality=position_delta_usd+hedge_delta_usd
