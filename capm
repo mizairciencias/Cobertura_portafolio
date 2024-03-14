@@ -1,0 +1,206 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Sep 22 18:13:38 2023
+
+@author: HP
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import scipy.stats as sts
+import yfinance as yf 
+import datetime as dt
+import scipy.optimize as op
+import json
+
+
+
+
+def load_timeseries(ric,days=1000):
+    today=dt.datetime.today()
+    days=dt.timedelta(days=days)
+    start_data=(today-days).strftime('%Y-%m-%d')
+    end_data=today.strftime('%Y-%m-%d')
+     
+    raw_data=yf.download(ric,start=start_data,end=end_data).reset_index()
+    t=pd.DataFrame()
+    t['date']=pd.to_datetime(raw_data['Date'])
+    t['close']=raw_data['Close']
+    t['close_previus']=t['close'].shift(1)
+    t['return']=t['close']/t['close_previus']-1#rendimiento entre cierres
+    t=t.dropna()
+    t=t.reset_index(drop=True)
+    return t
+
+
+
+def synchronize_timeseries(benchmark,security):
+    #get timeseries of X and Y
+    time_series_x=load_timeseries(benchmark)
+    time_series_y=load_timeseries(security)
+    timeseries=pd.merge(time_series_x,time_series_y,on='date')\
+        .sort_values(by='date',ignore_index=True)
+    return timeseries
+
+def compute_beta(benchmark,security):
+    m=model(benchmark,security)
+    m.syncronise_timeseries()
+    m.compute_linear_regression()
+    return m.beta
+
+def compute_correlation(security_1,security_2):
+    m=model(security_1,security_2)
+    m.syncronise_timeseries()
+    m.compute_linear_regression()
+    return m.rvalue
+
+def dataframe_correl_beta(benchmark,position_security,hedge_universe):
+    df=pd.DataFrame()
+    correlations=[]
+    betas=[]
+    for hedge_security in hedge_universe:
+        correlation=compute_correlation(position_security, hedge_security)
+        beta=compute_beta(position_security, hedge_security)
+        betas.append(beta)
+        correlations.append(correlation)
+    df['hedge_security']=hedge_universe
+    df['correlation']=correlations
+    df['beta']=betas
+    df=df.sort_values(by='correlation',ascending=False)
+    return df
+        
+def dataframe_factors(security,factors):
+    df=pd.DataFrame()
+    correlations=[]
+    betas=[]
+    for factor in factors:
+        correlation=compute_correlation(security, factor)
+        beta=compute_beta(security, factor)
+        betas.append(beta)
+        correlations.append(correlation)
+    df['factor']=factors
+    df['correlation']=correlations
+    df['beta']=betas
+    df=df.sort_values(by='correlation',ascending=False)
+    return df
+
+def cost_function_capm(x,betas,target_delta,target_beta,regularisation):
+    dimensions=len(x)
+    deltas=np.ones([dimensions])
+    f_delta=(np.transpose(deltas).dot(x).item()+target_delta)**2
+    f_beta=(np.transpose(betas).dot(x).item()+target_beta)**2
+    f_penalty=regularisation*(np.sum(x**2))
+    f=f_beta+f_delta+f_penalty
+    return f
+
+
+class model:
+    
+    def __init__(self,benchmark,security, decimals=5):
+        self.decimals=decimals
+        self.benchmark=benchmark
+        self.security=security
+        self.timeseries=None
+        self.x=None
+        self.y=None
+        self.beta=None
+        self.alpha=None
+        self.rvalue=None 
+        self.pvalue=None
+        self.std_err=None
+        self.rsquare=None
+        self.null_hypothesis=None
+        self.predictor_linreg=None
+        
+    def syncronise_timeseries(self):
+        self.timeseries=synchronize_timeseries(self.benchmark, self.security)
+        
+    def plot_timeseries(self):
+        plt.figure(figsize=(12,6))
+        plt.title('Time series of close prices')
+        plt.xlabel('Time')
+        plt.ylabel('Prices')
+        ax=plt.gca()
+        ax1=self.timeseries.plot(kind='line', x='date', y='close_x', color='blue',
+                            label=self.benchmark,ax=ax,grid=True)
+        ax2=self.timeseries.plot(kind='line', x='date', y='close_y', color='red',
+                            label=self.security,ax=ax,grid=True,secondary_y=True)
+        ax1.legend(loc=2)
+        ax2.legend(loc=1)
+        plt.show()
+        
+    def compute_linear_regression(self):
+        self.x=self.timeseries['return_x'].values
+        self.y=self.timeseries['return_y'].values
+        self.beta, self.alpha, self.rvalue, self.pvalue, self.std_err = sts.linregress(self.x,self.y)
+        self.rsquare=self.rvalue**2 # entre 0 y 1 explica variabilidad de los datos
+        self.null_hypothesis=self.pvalue>0.05 #si pvalue<0.05 aceptamos la hipotesis nula B=0
+        self.predictor_linreg=self.alpha+self.beta*self.x
+        
+    def plot_linear_regression(self):
+        title='Scatterplot of returns \n'\
+            +f'Linear regression | security {self.security} | benchmark {self.benchmark}\n'\
+            +'alpha (intercept)='+f'{np.round(self.alpha,self.decimals)} | beta(slope)={np.round(self.beta,self.decimals)} \n'\
+            +f'p-value={np.round(self.pvalue,self.decimals)} | null hypothesis(beta=0)={self.null_hypothesis} \n'\
+            +f'correl (r-value)={np.round(self.rvalue,self.decimals)} | rsquare={np.round(self.rsquare,self.decimals)}'
+            
+        plt.figure()
+        plt.title(title)
+        plt.scatter(self.x,self.y)
+        plt.plot(self.x,self.predictor_linreg,color='green')
+        plt.grid()
+        plt.ylabel(self.security)
+        plt.xlabel(self.benchmark)
+        plt.show()
+
+
+
+
+class hedger:
+    def __init__(self,position_ric,position_delta_usd,benchmark,hedge_securities,decimals=6):
+        self.position_ric=position_ric
+        self.position_delta_usd=position_delta_usd
+        self.hedge_securities=hedge_securities
+        self.benchmark=benchmark
+        self.position_beta=None
+        self.position_beta_usd=None
+        self.hedge_betas=[]
+        self.decimals=decimals
+        self.hedge_weights=None
+        self.hedge_delta_usd=None
+        self.hedge_beta_usd=None
+        
+    def compute_betas(self):
+        self.position_beta=compute_beta(self.benchmark, self.position_ric)
+        self.position_beta_usd=self.position_beta*self.position_delta_usd
+        for security in self.hedge_securities:
+            beta=compute_beta(self.benchmark, security)
+            self.hedge_betas.append(beta)
+            
+    def compute_hedge_weights_exact(self):
+        dimensions=len(self.hedge_securities)
+        if dimensions!=2:
+            print('-------')
+            print('Cannot compute exact solution because dimensions are not two')
+            return
+        deltas=np.ones([dimensions])
+        mtx=np.row_stack((deltas,self.hedge_betas))
+        targets= -np.array([[self.position_delta_usd],[self.position_beta_usd]])
+        
+        self.hedge_weights=np.linalg.inv(mtx).dot(targets)
+        self.hedge_delta_usd=np.sum(self.hedge_weights)
+        self.hedge_beta_usd=np.transpose(self.hedge_betas).dot(self.hedge_weights).item()
+        
+    def compute_hedge_weights(self,regularization=0):
+
+        #condition inicial
+        x0=-self.position_delta_usd/len(self.hedge_betas)*np.ones([len(self.hedge_betas),1])
+        
+        optimal_result=op.minimize(fun=cost_function_capm, x0=x0,\
+                                   args=(self.hedge_betas,self.position_delta_usd,\
+                                         self.position_beta_usd,regularization))
+        
+        self.hedge_weights=optimal_result.x
+        self.hedge_delta_usd=np.sum(self.hedge_weights)
+        self.hedge_beta_usd=np.transpose(self.hedge_betas).dot(self.hedge_weights).item()    
